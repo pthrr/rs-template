@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use walkdir::WalkDir;
 
-use relationships::{extract_relationships, generate_function_call_graph, CodeRelationships};
+use relationships::{extract_relationships, generate_function_call_graph, generate_type_inheritance_graph, CodeRelationships};
 use base64::{Engine as _, engine::general_purpose};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -71,6 +71,7 @@ fn generate_and_process_docs(open: bool) -> Result<()> {
 
     println!("  Found {} functions", relationships.functions.len());
     println!("  Call graph edges: {}", relationships.call_graph.len());
+    println!("  Inheritance entries: {}", relationships.inheritance.len());
 
     // Find and process all HTML files
     let doc_dir = workspace_root.join("target/doc");
@@ -148,9 +149,10 @@ fn process_html_file(path: &Path, relationships: &CodeRelationships) -> Result<(
         return Ok(());
     }
 
-    // Add custom footer and inject call graphs
+    // Add custom footer and inject graphs
     let mut modified = add_custom_footer(&content);
     modified = inject_call_graphs(&modified, relationships);
+    modified = inject_inheritance_graphs(&modified, relationships, path);
 
     // Write back if modified
     if modified != content {
@@ -213,6 +215,61 @@ fn inject_call_graphs(html: &str, relationships: &CodeRelationships) -> String {
                 // Insert before </div></details> (the closing of the docblock)
                 if let Some(pos) = result.find("</div></details></section>") {
                     result.insert_str(pos, &call_graph_html);
+                }
+            }
+        }
+    }
+
+    result
+}
+
+fn inject_inheritance_graphs(html: &str, relationships: &CodeRelationships, path: &Path) -> String {
+    let mut result = html.to_string();
+
+    // Extract unique type names from inheritance info
+    let mut type_names: Vec<&String> = relationships
+        .inheritance
+        .values()
+        .map(|info| &info.type_name)
+        .collect();
+    type_names.sort();
+    type_names.dedup();
+
+    // Look for struct/enum documentation sections
+    for type_name in type_names {
+        // Check if this file is for this type by looking at the filename
+        let file_name = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
+        let simple_name = type_name.split("::").last().unwrap_or(type_name);
+
+        // Match struct.TypeName.html or enum.TypeName.html
+        let matches_file = file_name == format!("struct.{}.html", simple_name)
+            || file_name == format!("enum.{}.html", simple_name);
+
+        if matches_file {
+            // Try to generate an inheritance graph for this type
+            if let Some(svg) = generate_type_inheritance_graph(type_name, relationships) {
+                // Encode SVG as base64 for embedding
+                let svg_base64 = general_purpose::STANDARD.encode(&svg);
+                let data_uri = format!("data:image/svg+xml;base64,{}", svg_base64);
+
+                // Create an inheritance graph section
+                let inheritance_graph_html = format!(
+                    "<h2 id=\"trait-graph\"><a class=\"doc-anchor\" href=\"#trait-graph\">§</a>Trait Implementation Graph</h2>\n\
+<div class=\"docblock\">\n    \
+    <img src=\"{}\" alt=\"Trait implementations for {}\" style=\"max-width: 100%; height: auto; margin: 10px 0;\" />\n    \
+    <p style=\"font-size: 0.9em; color: rgb(102, 102, 102);\">\n        \
+        <strong>Legend:</strong>\n        \
+        <span style=\"color: rgb(106, 27, 154);\">■</span> Traits →\n        \
+        <span style=\"color: rgb(21, 101, 192);\">■</span> This type\n    \
+    </p>\n\
+</div>\n",
+                    data_uri, type_name
+                );
+
+                // Insert after struct/enum description, before trait implementations section
+                // Pattern: </div></details><h2 id="trait-implementations"
+                if let Some(pos) = result.find("</div></details><h2 id=\"trait-implementations\"") {
+                    result.insert_str(pos + "</div></details>".len(), &inheritance_graph_html);
                 }
             }
         }

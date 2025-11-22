@@ -281,6 +281,127 @@ pub fn extract_relationships(source_files: Vec<PathBuf>) -> CodeRelationships {
     }
 }
 
+/// Generate an SVG inheritance/trait implementation graph for a specific type
+pub fn generate_type_inheritance_graph(
+    type_name: &str,
+    relationships: &CodeRelationships,
+) -> Option<String> {
+    // Find all trait implementations for this type
+    let mut trait_impls: Vec<(&String, &InheritanceInfo)> = relationships
+        .inheritance
+        .iter()
+        .filter(|(_, info)| info.type_name == type_name && info.trait_name.is_some())
+        .collect();
+
+    // Also find inherent impl (no trait)
+    let inherent_impl = relationships
+        .inheritance
+        .get(type_name)
+        .filter(|info| info.trait_name.is_none());
+
+    if trait_impls.is_empty() && inherent_impl.is_none() {
+        return None;
+    }
+
+    trait_impls.sort_by_key(|(k, _)| *k);
+
+    let width = 800;
+    let base_height = 200;
+    let trait_count = trait_impls.len();
+    let height = base_height + (trait_count * 80).max(100);
+
+    let center_x = width / 2;
+    let type_y = height / 2;
+
+    let mut svg = format!(
+        "<svg width=\"{}\" height=\"{}\" xmlns=\"http://www.w3.org/2000/svg\">\n  \
+  <style>\n    \
+    .type-node {{ fill: rgb(33, 150, 243); stroke: rgb(21, 101, 192); stroke-width: 3; }}\n    \
+    .trait-node {{ fill: rgb(156, 39, 176); stroke: rgb(106, 27, 154); stroke-width: 2; }}\n    \
+    .inherent-node {{ fill: rgb(76, 175, 80); stroke: rgb(46, 125, 50); stroke-width: 2; }}\n    \
+    .impl-edge {{ stroke: rgb(156, 39, 176); stroke-width: 2; stroke-dasharray: 5,5; marker-end: url(#impl-arrow); }}\n    \
+    .text {{ fill: white; font-family: monospace; font-size: 12px; text-anchor: middle; }}\n    \
+    .method-text {{ fill: white; font-family: monospace; font-size: 10px; text-anchor: middle; }}\n  \
+  </style>\n  \
+  <defs>\n    \
+    <marker id=\"impl-arrow\" markerWidth=\"10\" markerHeight=\"10\" refX=\"9\" refY=\"3\" orient=\"auto\">\n      \
+      <polygon points=\"0 0, 10 3, 0 6\" fill=\"rgb(156, 39, 176)\" />\n    \
+    </marker>\n  \
+  </defs>\n",
+        width, height
+    );
+
+    // Draw edges from type to traits
+    for (i, _) in trait_impls.iter().enumerate() {
+        let trait_y = 50 + i * 80;
+        svg.push_str(&format!(
+            "  <line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" class=\"impl-edge\" />\n",
+            center_x,
+            type_y,
+            center_x,
+            trait_y + 30
+        ));
+    }
+
+    // Draw trait nodes
+    for (i, (_, info)) in trait_impls.iter().enumerate() {
+        let trait_y = 50 + i * 80;
+        let trait_name = info.trait_name.as_ref().unwrap();
+        let simple_trait = trait_name.split("::").last().unwrap_or(trait_name);
+
+        // Trait box
+        svg.push_str(&format!(
+            "  <rect x=\"{}\" y=\"{}\" width=\"300\" height=\"60\" rx=\"5\" class=\"trait-node\" />\n",
+            center_x - 150,
+            trait_y
+        ));
+
+        // Trait name
+        svg.push_str(&format!(
+            "  <text x=\"{}\" y=\"{}\" class=\"text\">trait {}</text>\n",
+            center_x,
+            trait_y + 20,
+            simple_trait
+        ));
+
+        // Methods
+        let methods_str = if info.methods.is_empty() {
+            String::new()
+        } else if info.methods.len() <= 3 {
+            info.methods.join(", ")
+        } else {
+            format!("{} methods", info.methods.len())
+        };
+
+        if !methods_str.is_empty() {
+            svg.push_str(&format!(
+                "  <text x=\"{}\" y=\"{}\" class=\"method-text\">{}</text>\n",
+                center_x,
+                trait_y + 45,
+                methods_str
+            ));
+        }
+    }
+
+    // Draw type node in center
+    let simple_type = type_name.split("::").last().unwrap_or(type_name);
+    svg.push_str(&format!(
+        "  <rect x=\"{}\" y=\"{}\" width=\"280\" height=\"40\" rx=\"5\" class=\"type-node\" />\n",
+        center_x - 140,
+        type_y
+    ));
+    svg.push_str(&format!(
+        "  <text x=\"{}\" y=\"{}\" class=\"text\">{}</text>\n",
+        center_x,
+        type_y + 25,
+        simple_type
+    ));
+
+    svg.push_str("</svg>");
+
+    Some(svg)
+}
+
 /// Generate a simple SVG call graph for a specific function
 pub fn generate_function_call_graph(
     function_name: &str,
@@ -1016,5 +1137,419 @@ mod tests {
         assert!(rels.call_graph["test"].contains("iter"));
         assert!(rels.call_graph["test"].contains("map"));
         assert!(rels.call_graph["test"].contains("collect"));
+    }
+
+    #[test]
+    fn test_inheritance_graph_single_trait() {
+        let code = r#"
+            trait Greeter {
+                fn greet(&self);
+            }
+
+            struct FriendlyGreeter;
+
+            impl Greeter for FriendlyGreeter {
+                fn greet(&self) {}
+            }
+        "#;
+
+        let rels = parse_and_extract(code);
+        let svg = generate_type_inheritance_graph("FriendlyGreeter", &rels);
+
+        assert!(svg.is_some());
+        let svg_content = svg.unwrap();
+        assert!(svg_content.contains("<svg"));
+        assert!(svg_content.contains("FriendlyGreeter"));
+        assert!(svg_content.contains("Greeter"));
+        assert!(svg_content.contains("trait-node"));
+        assert!(svg_content.contains("type-node"));
+    }
+
+    #[test]
+    fn test_inheritance_graph_multiple_traits() {
+        let code = r#"
+            trait Trait1 {
+                fn method1(&self);
+            }
+
+            trait Trait2 {
+                fn method2(&self);
+            }
+
+            struct MyType;
+
+            impl Trait1 for MyType {
+                fn method1(&self) {}
+            }
+
+            impl Trait2 for MyType {
+                fn method2(&self) {}
+            }
+        "#;
+
+        let rels = parse_and_extract(code);
+        let svg = generate_type_inheritance_graph("MyType", &rels);
+
+        assert!(svg.is_some());
+        let svg_content = svg.unwrap();
+        assert!(svg_content.contains("MyType"));
+        assert!(svg_content.contains("Trait1"));
+        assert!(svg_content.contains("Trait2"));
+    }
+
+    #[test]
+    fn test_inheritance_graph_no_traits() {
+        let code = r#"
+            struct PlainStruct;
+
+            impl PlainStruct {
+                fn method(&self) {}
+            }
+        "#;
+
+        let rels = parse_and_extract(code);
+        let svg = generate_type_inheritance_graph("PlainStruct", &rels);
+
+        // Should return Some because there's an inherent impl
+        assert!(svg.is_some());
+    }
+
+    #[test]
+    fn test_inheritance_graph_nonexistent_type() {
+        let code = r#"
+            struct Foo;
+        "#;
+
+        let rels = parse_and_extract(code);
+        let svg = generate_type_inheritance_graph("NonExistent", &rels);
+
+        assert!(svg.is_none());
+    }
+
+    #[test]
+    fn test_inheritance_info_stored() {
+        let code = r#"
+            trait MyTrait {
+                fn trait_method(&self);
+            }
+
+            struct MyStruct;
+
+            impl MyTrait for MyStruct {
+                fn trait_method(&self) {}
+            }
+        "#;
+
+        let rels = parse_and_extract(code);
+
+        assert!(rels.inheritance.contains_key("MyStruct::MyTrait"));
+        let info = &rels.inheritance["MyStruct::MyTrait"];
+        assert_eq!(info.type_name, "MyStruct");
+        assert_eq!(info.trait_name, Some("MyTrait".to_string()));
+        assert_eq!(info.methods.len(), 1);
+        assert!(info.methods.contains(&"trait_method".to_string()));
+    }
+
+    #[test]
+    fn test_inheritance_graph_with_enum() {
+        let code = r#"
+            trait Handler {
+                fn handle(&self);
+            }
+
+            enum Event {
+                Click,
+                Hover,
+            }
+
+            impl Handler for Event {
+                fn handle(&self) {}
+            }
+        "#;
+
+        let rels = parse_and_extract(code);
+        let svg = generate_type_inheritance_graph("Event", &rels);
+
+        assert!(svg.is_some());
+        let svg_content = svg.unwrap();
+        assert!(svg_content.contains("Event"));
+        assert!(svg_content.contains("Handler"));
+    }
+
+    #[test]
+    fn test_inheritance_graph_many_methods() {
+        let code = r#"
+            trait LargeTrait {
+                fn method1(&self);
+                fn method2(&self);
+                fn method3(&self);
+                fn method4(&self);
+                fn method5(&self);
+            }
+
+            struct MyType;
+
+            impl LargeTrait for MyType {
+                fn method1(&self) {}
+                fn method2(&self) {}
+                fn method3(&self) {}
+                fn method4(&self) {}
+                fn method5(&self) {}
+            }
+        "#;
+
+        let rels = parse_and_extract(code);
+        let svg = generate_type_inheritance_graph("MyType", &rels);
+
+        assert!(svg.is_some());
+        let svg_content = svg.unwrap();
+        // Should show "5 methods" instead of listing all
+        assert!(svg_content.contains("5 methods"));
+    }
+
+    #[test]
+    fn test_inheritance_graph_few_methods_listed() {
+        let code = r#"
+            trait SmallTrait {
+                fn foo(&self);
+                fn bar(&self);
+            }
+
+            struct MyType;
+
+            impl SmallTrait for MyType {
+                fn foo(&self) {}
+                fn bar(&self) {}
+            }
+        "#;
+
+        let rels = parse_and_extract(code);
+        let svg = generate_type_inheritance_graph("MyType", &rels);
+
+        assert!(svg.is_some());
+        let svg_content = svg.unwrap();
+        // Should list method names for 3 or fewer
+        assert!(svg_content.contains("foo"));
+        assert!(svg_content.contains("bar"));
+    }
+
+    #[test]
+    fn test_inheritance_graph_generic_trait() {
+        let code = r#"
+            trait Convert<T> {
+                fn convert(&self) -> T;
+            }
+
+            struct MyType;
+
+            impl Convert<String> for MyType {
+                fn convert(&self) -> String {
+                    String::new()
+                }
+            }
+        "#;
+
+        let rels = parse_and_extract(code);
+        let svg = generate_type_inheritance_graph("MyType", &rels);
+
+        assert!(svg.is_some());
+        let svg_content = svg.unwrap();
+        assert!(svg_content.contains("MyType"));
+        assert!(svg_content.contains("Convert"));
+    }
+
+    #[test]
+    fn test_inheritance_graph_std_trait() {
+        let code = r#"
+            struct MyType;
+
+            impl std::fmt::Display for MyType {
+                fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    Ok(())
+                }
+            }
+        "#;
+
+        let rels = parse_and_extract(code);
+        let svg = generate_type_inheritance_graph("MyType", &rels);
+
+        assert!(svg.is_some());
+        let svg_content = svg.unwrap();
+        assert!(svg_content.contains("MyType"));
+        // Should show simple name, not full path
+        assert!(svg_content.contains("Display"));
+    }
+
+    #[test]
+    fn test_inheritance_multiple_impls_same_trait() {
+        let code = r#"
+            struct TypeA;
+            struct TypeB;
+
+            trait Common {
+                fn common(&self);
+            }
+
+            impl Common for TypeA {
+                fn common(&self) {}
+            }
+
+            impl Common for TypeB {
+                fn common(&self) {}
+            }
+        "#;
+
+        let rels = parse_and_extract(code);
+
+        // Each type should have its own graph
+        let svg_a = generate_type_inheritance_graph("TypeA", &rels);
+        let svg_b = generate_type_inheritance_graph("TypeB", &rels);
+
+        assert!(svg_a.is_some());
+        assert!(svg_b.is_some());
+
+        let content_a = svg_a.unwrap();
+        let content_b = svg_b.unwrap();
+
+        assert!(content_a.contains("TypeA"));
+        assert!(content_a.contains("Common"));
+
+        assert!(content_b.contains("TypeB"));
+        assert!(content_b.contains("Common"));
+    }
+
+    #[test]
+    fn test_inheritance_trait_with_no_methods() {
+        let code = r#"
+            trait Marker {}
+
+            struct MyType;
+
+            impl Marker for MyType {}
+        "#;
+
+        let rels = parse_and_extract(code);
+        let svg = generate_type_inheritance_graph("MyType", &rels);
+
+        assert!(svg.is_some());
+        let svg_content = svg.unwrap();
+        assert!(svg_content.contains("MyType"));
+        assert!(svg_content.contains("Marker"));
+    }
+
+    #[test]
+    fn test_inherent_impl_stored() {
+        let code = r#"
+            struct MyStruct;
+
+            impl MyStruct {
+                fn new() -> Self {
+                    MyStruct
+                }
+                fn method(&self) {}
+            }
+        "#;
+
+        let rels = parse_and_extract(code);
+
+        assert!(rels.inheritance.contains_key("MyStruct"));
+        let info = &rels.inheritance["MyStruct"];
+        assert_eq!(info.type_name, "MyStruct");
+        assert_eq!(info.trait_name, None);
+        assert_eq!(info.methods.len(), 2);
+        assert!(info.methods.contains(&"new".to_string()));
+        assert!(info.methods.contains(&"method".to_string()));
+    }
+
+    #[test]
+    fn test_inheritance_graph_svg_structure() {
+        let code = r#"
+            trait MyTrait {
+                fn test(&self);
+            }
+
+            struct MyType;
+
+            impl MyTrait for MyType {
+                fn test(&self) {}
+            }
+        "#;
+
+        let rels = parse_and_extract(code);
+        let svg = generate_type_inheritance_graph("MyType", &rels);
+
+        assert!(svg.is_some());
+        let svg_content = svg.unwrap();
+
+        // Verify SVG structure
+        assert!(svg_content.contains("<svg"));
+        assert!(svg_content.contains("</svg>"));
+        assert!(svg_content.contains("<style>"));
+        assert!(svg_content.contains("<defs>"));
+        assert!(svg_content.contains("<rect"));
+        assert!(svg_content.contains("<text"));
+        assert!(svg_content.contains("<line"));
+        assert!(svg_content.contains("impl-edge"));
+        assert!(svg_content.contains("trait-node"));
+        assert!(svg_content.contains("type-node"));
+    }
+
+    #[test]
+    fn test_inheritance_combined_trait_and_inherent() {
+        let code = r#"
+            trait Greet {
+                fn greet(&self);
+            }
+
+            struct Person;
+
+            impl Greet for Person {
+                fn greet(&self) {}
+            }
+
+            impl Person {
+                fn new() -> Self {
+                    Person
+                }
+            }
+        "#;
+
+        let rels = parse_and_extract(code);
+
+        // Should have both trait impl and inherent impl
+        assert!(rels.inheritance.contains_key("Person::Greet"));
+        assert!(rels.inheritance.contains_key("Person"));
+
+        let svg = generate_type_inheritance_graph("Person", &rels);
+        assert!(svg.is_some());
+
+        let svg_content = svg.unwrap();
+        assert!(svg_content.contains("Person"));
+        assert!(svg_content.contains("Greet"));
+    }
+
+    #[test]
+    fn test_inheritance_qualified_type_name() {
+        let code = r#"
+            mod inner {
+                pub struct MyType;
+            }
+
+            trait MyTrait {
+                fn test(&self);
+            }
+
+            impl MyTrait for inner::MyType {
+                fn test(&self) {}
+            }
+        "#;
+
+        let rels = parse_and_extract(code);
+
+        // The type name should include the module path
+        let has_qualified = rels.inheritance.values()
+            .any(|info| info.type_name.contains("inner"));
+
+        assert!(has_qualified);
     }
 }

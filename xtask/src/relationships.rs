@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use syn::visit::Visit;
-use syn::{Expr, ExprCall, ExprMethodCall, ImplItem, ItemFn, ItemImpl};
+use syn::{Expr, ExprCall, ExprMethodCall, ImplItem, ItemFn, ItemImpl, ItemTrait};
 
 /// Complete code relationship data extracted from source files
 #[derive(Debug, Default)]
@@ -147,7 +147,10 @@ impl<'a> Visit<'a> for RelationshipVisitor<'a> {
         };
 
         // Extract trait name if this is a trait impl
-        let trait_name = node.trait_.as_ref().map(|(_, path, _)| Self::extract_path_name(path));
+        let trait_name = node
+            .trait_
+            .as_ref()
+            .map(|(_, path, _)| Self::extract_path_name(path));
 
         // Set context
         let prev_type = self.context.current_type.clone();
@@ -187,6 +190,38 @@ impl<'a> Visit<'a> for RelationshipVisitor<'a> {
         // Restore context
         self.context.current_type = prev_type;
         self.context.current_impl_trait = prev_impl_trait;
+    }
+
+    fn visit_item_trait(&mut self, node: &'a ItemTrait) {
+        let trait_name = node.ident.to_string();
+
+        // Extract supertraits from trait bounds
+        let mut supertraits = Vec::new();
+        if node.colon_token.is_some() {
+            for bound in &node.supertraits {
+                if let syn::TypeParamBound::Trait(trait_bound) = bound {
+                    let supertrait_name = Self::extract_path_name(&trait_bound.path);
+                    supertraits.push(supertrait_name);
+                }
+            }
+        }
+
+        // Store trait definition with its supertraits
+        if !supertraits.is_empty() {
+            self.inheritance.insert(
+                format!("__trait_def::{}", trait_name),
+                InheritanceInfo {
+                    trait_name: Some(trait_name.clone()),
+                    type_name: "__trait_definition__".to_string(),
+                    methods: Vec::new(),
+                    bounds: Vec::new(),
+                    parent_traits: supertraits,
+                },
+            );
+        }
+
+        // Continue visiting trait items
+        syn::visit::visit_item_trait(self, node);
     }
 
     fn visit_impl_item_fn(&mut self, node: &'a syn::ImplItemFn) {
@@ -273,6 +308,29 @@ pub fn extract_relationships(source_files: Vec<PathBuf>) -> CodeRelationships {
         }
     }
 
+    // Populate parent_traits for trait implementations
+    let trait_definitions: HashMap<String, Vec<String>> = inheritance
+        .iter()
+        .filter(|(key, info)| {
+            key.starts_with("__trait_def::") && info.type_name == "__trait_definition__"
+        })
+        .map(|(key, info)| {
+            let trait_name = key.strip_prefix("__trait_def::").unwrap_or("");
+            (trait_name.to_string(), info.parent_traits.clone())
+        })
+        .collect();
+
+    for (_, info) in inheritance.iter_mut() {
+        if let Some(ref trait_name) = info.trait_name {
+            if let Some(supertraits) = trait_definitions.get(trait_name) {
+                info.parent_traits = supertraits.clone();
+            }
+        }
+    }
+
+    // Remove temporary trait definition entries
+    inheritance.retain(|key, _| !key.starts_with("__trait_def::"));
+
     CodeRelationships {
         call_graph,
         usage_graph,
@@ -287,13 +345,13 @@ pub fn generate_type_inheritance_graph(
     relationships: &CodeRelationships,
 ) -> Option<String> {
     // Find all trait implementations for this type
-    let mut trait_impls: Vec<(&String, &InheritanceInfo)> = relationships
+    let trait_impls: Vec<(&String, &InheritanceInfo)> = relationships
         .inheritance
         .iter()
         .filter(|(_, info)| info.type_name == type_name && info.trait_name.is_some())
         .collect();
 
-    // Also find inherent impl (no trait)
+    // Also check for inherent impl (no trait)
     let inherent_impl = relationships
         .inheritance
         .get(type_name)
@@ -303,98 +361,257 @@ pub fn generate_type_inheritance_graph(
         return None;
     }
 
-    trait_impls.sort_by_key(|(k, _)| *k);
+    // If only inherent impl exists (no traits), generate simple diagram
+    if trait_impls.is_empty() {
+        let width = 400;
+        let height = 200;
+        let simple_type = type_name.split("::").last().unwrap_or(type_name);
 
-    let width = 800;
-    let base_height = 200;
-    let trait_count = trait_impls.len();
-    let height = base_height + (trait_count * 80).max(100);
+        let mut svg = format!(
+            "<svg width=\"{}\" height=\"{}\" xmlns=\"http://www.w3.org/2000/svg\">\n  \
+  <style>\n    \
+    .type-node {{ fill: rgb(33, 150, 243); stroke: rgb(21, 101, 192); stroke-width: 3; }}\n    \
+    .text {{ fill: white; font-family: monospace; font-size: 12px; font-weight: bold; text-anchor: middle; }}\n    \
+    .method-text {{ fill: white; font-family: monospace; font-size: 10px; text-anchor: middle; opacity: 0.9; }}\n  \
+  </style>\n",
+            width, height
+        );
 
-    let center_x = width / 2;
-    let type_y = height / 2;
+        svg.push_str(&format!(
+            "  <rect x=\"50\" y=\"75\" width=\"300\" height=\"70\" rx=\"5\" class=\"type-node\" />\n"
+        ));
+        svg.push_str(&format!(
+            "  <text x=\"200\" y=\"105\" class=\"text\">{}</text>\n",
+            simple_type
+        ));
+        svg.push_str(&format!(
+            "  <text x=\"200\" y=\"127\" class=\"method-text\">struct (no traits)</text>\n"
+        ));
+        svg.push_str("</svg>");
 
+        return Some(svg);
+    }
+
+    // Build dependency graph: child -> parents
+    let mut dependencies: HashMap<String, Vec<String>> = HashMap::new();
+    for (_, info) in &trait_impls {
+        let trait_name = info.trait_name.as_ref().unwrap().clone();
+        dependencies.insert(trait_name, info.parent_traits.clone());
+    }
+
+    // Calculate hierarchical layers
+    fn calculate_layer(
+        trait_name: &str,
+        dependencies: &HashMap<String, Vec<String>>,
+        layers: &mut HashMap<String, usize>,
+    ) -> usize {
+        if let Some(&layer) = layers.get(trait_name) {
+            return layer;
+        }
+
+        let layer = if let Some(parents) = dependencies.get(trait_name) {
+            if parents.is_empty() {
+                0 // Root trait
+            } else {
+                parents
+                    .iter()
+                    .map(|p| calculate_layer(p, dependencies, layers))
+                    .max()
+                    .unwrap_or(0)
+                    + 1
+            }
+        } else {
+            0
+        };
+
+        layers.insert(trait_name.to_string(), layer);
+        layer
+    }
+
+    let mut trait_layers: HashMap<String, usize> = HashMap::new();
+    for (_, info) in &trait_impls {
+        let trait_name = info.trait_name.as_ref().unwrap();
+        calculate_layer(trait_name, &dependencies, &mut trait_layers);
+    }
+
+    // Group traits by layer
+    let max_layer = trait_layers.values().max().copied().unwrap_or(0);
+    let mut layers: Vec<Vec<String>> = vec![Vec::new(); max_layer + 1];
+    for (trait_name, &layer) in &trait_layers {
+        layers[layer].push(trait_name.clone());
+    }
+
+    // Calculate dimensions with enough spacing to prevent overlaps
+    let max_nodes_in_layer = layers.iter().map(|layer| layer.len()).max().unwrap_or(1);
+    let (node_height, vertical_spacing, node_width) = (70, 80, 280); // Increased spacing to 80px
+    let row_height = node_height + vertical_spacing; // Now 150px total
+
+    let width = 1400; // Increased width for better horizontal spacing
+    let min_height = max_nodes_in_layer * row_height + 200;
+    let height = min_height.max(500).min(1400); // Increased max height
+
+    let left_margin = 100;
+    let layer_width = if max_layer > 0 {
+        ((width - left_margin - 400) / max_layer).max(node_width + 50)
+    } else {
+        width - left_margin - 400
+    };
+
+    // Calculate positions (grid-based)
+    let mut trait_positions: HashMap<String, (usize, usize)> = HashMap::new();
+    let total_grid_height = max_nodes_in_layer * row_height;
+    let grid_start_y = if total_grid_height < height {
+        (height - total_grid_height) / 2
+    } else {
+        50
+    };
+
+    for (layer_idx, layer_traits) in layers.iter().enumerate() {
+        let layer_x = left_margin + layer_idx * layer_width;
+        let num_nodes = layer_traits.len();
+        let empty_rows = max_nodes_in_layer - num_nodes;
+        let skip_top = empty_rows / 2;
+
+        for (i, trait_name) in layer_traits.iter().enumerate() {
+            let row_index = skip_top + i;
+            let y_pos = grid_start_y + row_index * row_height;
+            trait_positions.insert(trait_name.clone(), (layer_x, y_pos));
+        }
+    }
+
+    let type_x = width - 350;
+    let type_y = height / 2 - 35;
+
+    // Generate SVG
     let mut svg = format!(
         "<svg width=\"{}\" height=\"{}\" xmlns=\"http://www.w3.org/2000/svg\">\n  \
   <style>\n    \
     .type-node {{ fill: rgb(33, 150, 243); stroke: rgb(21, 101, 192); stroke-width: 3; }}\n    \
     .trait-node {{ fill: rgb(156, 39, 176); stroke: rgb(106, 27, 154); stroke-width: 2; }}\n    \
-    .inherent-node {{ fill: rgb(76, 175, 80); stroke: rgb(46, 125, 50); stroke-width: 2; }}\n    \
-    .impl-edge {{ stroke: rgb(156, 39, 176); stroke-width: 2; stroke-dasharray: 5,5; marker-end: url(#impl-arrow); }}\n    \
-    .text {{ fill: white; font-family: monospace; font-size: 12px; text-anchor: middle; }}\n    \
-    .method-text {{ fill: white; font-family: monospace; font-size: 10px; text-anchor: middle; }}\n  \
+    .impl-edge {{ stroke: rgb(156, 39, 176); stroke-width: 3; marker-end: url(#impl-arrow); }}\n    \
+    .super-edge {{ stroke: rgb(255, 152, 0); stroke-width: 2; stroke-dasharray: 6,4; marker-end: url(#super-arrow); }}\n    \
+    .text {{ fill: white; font-family: monospace; font-size: 12px; font-weight: bold; text-anchor: middle; }}\n    \
+    .method-text {{ fill: white; font-family: monospace; font-size: 10px; text-anchor: middle; opacity: 0.9; }}\n  \
   </style>\n  \
   <defs>\n    \
-    <marker id=\"impl-arrow\" markerWidth=\"10\" markerHeight=\"10\" refX=\"9\" refY=\"3\" orient=\"auto\">\n      \
-      <polygon points=\"0 0, 10 3, 0 6\" fill=\"rgb(156, 39, 176)\" />\n    \
+    <marker id=\"impl-arrow\" markerWidth=\"12\" markerHeight=\"12\" refX=\"10\" refY=\"3\" orient=\"auto\">\n      \
+      <polygon points=\"0 0, 12 3, 0 6\" fill=\"rgb(156, 39, 176)\" />\n    \
+    </marker>\n    \
+    <marker id=\"super-arrow\" markerWidth=\"12\" markerHeight=\"12\" refX=\"10\" refY=\"3\" orient=\"auto\">\n      \
+      <polygon points=\"0 0, 12 3, 0 6\" fill=\"rgb(255, 152, 0)\" />\n    \
     </marker>\n  \
   </defs>\n",
         width, height
     );
 
-    // Draw edges from type to traits
-    for (i, _) in trait_impls.iter().enumerate() {
-        let trait_y = 50 + i * 80;
-        svg.push_str(&format!(
-            "  <line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" class=\"impl-edge\" />\n",
-            center_x,
-            type_y,
-            center_x,
-            trait_y + 30
-        ));
+    // DRAW ARROWS FIRST (so they appear below/behind nodes)
+
+    // Supertrait arrows (parent -> child, flowing left-to-right)
+    let supertraits: HashSet<String> = trait_impls
+        .iter()
+        .flat_map(|(_, info)| info.parent_traits.iter().cloned())
+        .collect();
+
+    for (_, info) in trait_impls.iter() {
+        let child_trait = info.trait_name.as_ref().unwrap();
+        if let Some((child_x, child_y)) = trait_positions.get(child_trait) {
+            for parent_trait in &info.parent_traits {
+                if let Some((parent_x, parent_y)) = trait_positions.get(parent_trait) {
+                    // parent_traits means "these are my PARENTS/supertraits"
+                    // So arrow should flow FROM child (who has the parents) TO parent
+                    // This represents the "extends" relationship: child extends parent
+                    // Arrow flows child→parent (RIGHT to LEFT for hierarchy display)
+                    // START at CENTER of child, END at RIGHT EDGE of parent
+                    let start_x = child_x + node_width / 2; // Center of child
+                    let start_y = child_y + node_height / 2;
+                    let end_x = parent_x + node_width; // Right edge of parent
+                    let end_y = parent_y + node_height / 2;
+
+                    svg.push_str(&format!(
+                        "  <line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" class=\"super-edge\" />\n",
+                        start_x, start_y, end_x, end_y
+                    ));
+                }
+            }
+        }
     }
 
-    // Draw trait nodes
-    for (i, (_, info)) in trait_impls.iter().enumerate() {
-        let trait_y = 50 + i * 80;
+    // Implementation arrows (leaf trait -> type, flowing left-to-right)
+    for (_, info) in trait_impls.iter() {
         let trait_name = info.trait_name.as_ref().unwrap();
-        let simple_trait = trait_name.split("::").last().unwrap_or(trait_name);
+        // Skip if this is a supertrait (only leaf traits get impl arrows)
+        if supertraits.contains(trait_name) {
+            continue;
+        }
 
-        // Trait box
-        svg.push_str(&format!(
-            "  <rect x=\"{}\" y=\"{}\" width=\"300\" height=\"60\" rx=\"5\" class=\"trait-node\" />\n",
-            center_x - 150,
-            trait_y
-        ));
+        if let Some((trait_x, trait_y)) = trait_positions.get(trait_name) {
+            // Arrow flows trait→type (LEFT to RIGHT)
+            // START at CENTER of trait, END at LEFT EDGE of type
+            let start_x = trait_x + node_width / 2; // Center of trait
+            let start_y = trait_y + node_height / 2;
+            let end_x = type_x; // Left edge of type node
+            let end_y = type_y + 35; // Center of type node
 
-        // Trait name
-        svg.push_str(&format!(
-            "  <text x=\"{}\" y=\"{}\" class=\"text\">trait {}</text>\n",
-            center_x,
-            trait_y + 20,
-            simple_trait
-        ));
+            svg.push_str(&format!(
+                "  <line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" class=\"impl-edge\" />\n",
+                start_x, start_y, end_x, end_y
+            ));
+        }
+    }
 
-        // Methods
-        let methods_str = if info.methods.is_empty() {
-            String::new()
-        } else if info.methods.len() <= 3 {
-            info.methods.join(", ")
-        } else {
-            format!("{} methods", info.methods.len())
-        };
+    // NOW DRAW NODES (so they appear on top)
 
-        if !methods_str.is_empty() {
+    // Draw trait nodes
+    for (_, info) in trait_impls.iter() {
+        let trait_name = info.trait_name.as_ref().unwrap();
+        if let Some((x, y)) = trait_positions.get(trait_name) {
+            let simple_trait = trait_name.split("::").last().unwrap_or(trait_name);
+
+            svg.push_str(&format!(
+                "  <rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"5\" class=\"trait-node\" />\n",
+                x, y, node_width, node_height
+            ));
+
+            svg.push_str(&format!(
+                "  <text x=\"{}\" y=\"{}\" class=\"text\">trait {}</text>\n",
+                x + node_width / 2,
+                y + 25,
+                simple_trait
+            ));
+
+            let methods_str = if info.methods.is_empty() {
+                "no methods".to_string()
+            } else if info.methods.len() <= 2 {
+                info.methods.join(", ")
+            } else {
+                format!("{} methods", info.methods.len())
+            };
+
             svg.push_str(&format!(
                 "  <text x=\"{}\" y=\"{}\" class=\"method-text\">{}</text>\n",
-                center_x,
-                trait_y + 45,
+                x + node_width / 2,
+                y + 50,
                 methods_str
             ));
         }
     }
 
-    // Draw type node in center
+    // Draw type node
     let simple_type = type_name.split("::").last().unwrap_or(type_name);
     svg.push_str(&format!(
-        "  <rect x=\"{}\" y=\"{}\" width=\"280\" height=\"40\" rx=\"5\" class=\"type-node\" />\n",
-        center_x - 140,
-        type_y
+        "  <rect x=\"{}\" y=\"{}\" width=\"300\" height=\"70\" rx=\"5\" class=\"type-node\" />\n",
+        type_x, type_y
     ));
     svg.push_str(&format!(
         "  <text x=\"{}\" y=\"{}\" class=\"text\">{}</text>\n",
-        center_x,
-        type_y + 25,
+        type_x + 150,
+        type_y + 30,
         simple_type
+    ));
+    svg.push_str(&format!(
+        "  <text x=\"{}\" y=\"{}\" class=\"method-text\">struct</text>\n",
+        type_x + 150,
+        type_y + 52
     ));
 
     svg.push_str("</svg>");
@@ -1547,7 +1764,9 @@ mod tests {
         let rels = parse_and_extract(code);
 
         // The type name should include the module path
-        let has_qualified = rels.inheritance.values()
+        let has_qualified = rels
+            .inheritance
+            .values()
             .any(|info| info.type_name.contains("inner"));
 
         assert!(has_qualified);

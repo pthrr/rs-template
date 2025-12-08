@@ -2,7 +2,17 @@
   "permissions": {
     "allow": [
       "Bash(cargo xtask doc:*)",
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "Bash(cargo build:*)",
+      "Bash(test:*)",
+      "Bash(cat:*)",
+      "Bash(task doc:*)",
+      "Bash(task verify:*)",
+      "Bash(task build)",
+      "Bash(task test)",
+      "Bash(task)",
+      "Bash(task lint:*)",
+      "Bash(verus:*)"
     ],
     "deny": [],
     "ask": []

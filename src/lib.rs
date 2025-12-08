@@ -1,50 +1,15 @@
-//! # Rust Template
-//!
-//! A minimal Rust library template demonstrating basic module structure and documentation.
-//!
-//! ## Example
-//!
-//! ```
-//! use rust_template::greet;
-//!
-//! let message = greet("Rust");
-//! assert_eq!(message, "Hello, Rust!");
-//! ```
-
-/// Formats a greeting message.
-fn format_greeting(name: &str) -> String {
-    format!("Hello, {}!", name)
-}
-
-/// Greets the given name.
-///
-/// # Arguments
-///
-/// * `name` - The name to greet
-///
-/// # Returns
-///
-/// A greeting string
-///
-/// # Examples
-///
-/// ```
-/// use rust_template::greet;
-///
-/// let message = greet("World");
-/// assert_eq!(message, "Hello, World!");
-/// ```
 pub fn greet(name: &str) -> String {
     format_greeting(name)
 }
 
-/// A trait for things that can greet.
+fn format_greeting(name: &str) -> String {
+    format!("Hello, {}!", name)
+}
+
 pub trait Greeter {
-    /// Greet someone.
     fn greet(&self, name: &str) -> String;
 }
 
-/// A friendly greeter that uses exclamation marks.
 pub struct FriendlyGreeter;
 
 impl Greeter for FriendlyGreeter {
@@ -53,7 +18,6 @@ impl Greeter for FriendlyGreeter {
     }
 }
 
-/// A formal greeter that uses periods.
 pub struct FormalGreeter;
 
 impl Greeter for FormalGreeter {
@@ -61,6 +25,56 @@ impl Greeter for FormalGreeter {
         format!("Good day, {}.", name)
     }
 }
+
+pub trait Named {
+    fn name(&self) -> &str;
+}
+
+pub trait Displayable: Named {
+    fn display(&self) -> String {
+        format!("[{}]", self.name())
+    }
+}
+
+pub trait Interactive: Named + Greeter {
+    fn interact(&self, target: &str) -> String {
+        let intro = format!("I am {}. ", self.name());
+        let greeting = self.greet(target);
+        intro + &greeting
+    }
+}
+
+pub struct GreeterBot {
+    name: String,
+}
+
+impl GreeterBot {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+        }
+    }
+
+    pub fn process_greeting(&self, target: &str) -> String {
+        self.interact(target)
+    }
+}
+
+impl Named for GreeterBot {
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl Greeter for GreeterBot {
+    fn greet(&self, name: &str) -> String {
+        format!("Greetings, {}!", name)
+    }
+}
+
+impl Interactive for GreeterBot {}
+
+impl Displayable for GreeterBot {}
 
 #[cfg(test)]
 mod tests {
@@ -81,5 +95,13 @@ mod tests {
     fn test_formal_greeter() {
         let greeter = FormalGreeter;
         assert_eq!(greeter.greet("World"), "Good day, World.");
+    }
+
+    #[test]
+    fn test_greeter_bot() {
+        let bot = GreeterBot::new("R2D2");
+        assert_eq!(bot.name(), "R2D2");
+        assert!(bot.greet("Alice").contains("Greetings"));
+        assert!(bot.interact("Bob").contains("I am R2D2"));
     }
 }

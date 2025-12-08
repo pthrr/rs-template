@@ -5,15 +5,10 @@ members = [".", "xtask"]
 name = "rust-template"
 version = "0.1.0"
 edition = "2024"
-authors = ["Your Name <you@example.com>"]
-description = "A minimal Rust project template"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/yourusername/rust-template"
-keywords = ["template", "example"]
-categories = ["command-line-utilities"]
 
 [dependencies]
 clap = { version = "4.5.53", features = ["derive"] }
+base = { path = "external/base" }
 
 [lib]
 name = "rust_template"

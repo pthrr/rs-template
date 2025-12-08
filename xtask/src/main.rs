@@ -6,8 +6,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use walkdir::WalkDir;
 
-use relationships::{extract_relationships, generate_function_call_graph, generate_type_inheritance_graph, CodeRelationships};
 use base64::{Engine as _, engine::general_purpose};
+use relationships::{
+    CodeRelationships, extract_relationships, generate_function_call_graph,
+    generate_type_inheritance_graph,
+};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -113,7 +116,10 @@ fn generate_and_process_docs(open: bool) -> Result<()> {
         let _ = Command::new("open").arg(&full_path).spawn();
 
         #[cfg(target_os = "windows")]
-        let _ = Command::new("cmd").args(["/C", "start"]).arg(&full_path).spawn();
+        let _ = Command::new("cmd")
+            .args(["/C", "start"])
+            .arg(&full_path)
+            .spawn();
     }
 
     Ok(())
@@ -174,7 +180,7 @@ fn add_custom_footer(html: &str) -> String {
     if html.contains("</body>") && !is_already_processed(html) {
         html.replace(
             "</body>",
-            "<!-- Documentation processed by xtask -->\n</body>"
+            "<!-- Documentation processed by xtask -->\n</body>",
         )
     } else {
         html.to_string()
@@ -211,7 +217,10 @@ fn inject_call_graphs(html: &str, relationships: &CodeRelationships) -> String {
             let simple_name = func_name.split("::").last().unwrap_or(func_name);
 
             // Check if this HTML page is for this specific function
-            if result.contains(&format!("Function <span class=\"fn\">{}</span>", simple_name)) {
+            if result.contains(&format!(
+                "Function <span class=\"fn\">{}</span>",
+                simple_name
+            )) {
                 // Insert before </div></details> (the closing of the docblock)
                 if let Some(pos) = result.find("</div></details></section>") {
                     result.insert_str(pos, &call_graph_html);
@@ -259,17 +268,44 @@ fn inject_inheritance_graphs(html: &str, relationships: &CodeRelationships, path
     <img src=\"{}\" alt=\"Trait implementations for {}\" style=\"max-width: 100%; height: auto; margin: 10px 0;\" />\n    \
     <p style=\"font-size: 0.9em; color: rgb(102, 102, 102);\">\n        \
         <strong>Legend:</strong>\n        \
-        <span style=\"color: rgb(106, 27, 154);\">■</span> Traits →\n        \
-        <span style=\"color: rgb(21, 101, 192);\">■</span> This type\n    \
+        <span style=\"color: rgb(106, 27, 154);\">■</span> Traits\n        \
+        | <span style=\"color: rgb(21, 101, 192);\">■</span> This type\n        \
+        | <span style=\"color: rgb(255, 152, 0);\">⟶</span> Supertrait (extends)\n        \
+        | <span style=\"color: rgb(106, 27, 154);\">→</span> Implementation\n    \
     </p>\n\
 </div>\n",
                     data_uri, type_name
                 );
 
                 // Insert after struct/enum description, before trait implementations section
-                // Pattern: </div></details><h2 id="trait-implementations"
-                if let Some(pos) = result.find("</div></details><h2 id=\"trait-implementations\"") {
+                // Try multiple patterns because the structure varies:
+                // - Structs without methods: </div></details><h2 id="trait-implementations"
+                // - Structs with methods: </div></details></div></details></div><h2 id="trait-implementations"
+
+                let inserted = if let Some(pos) = result
+                    .find("</div></details></div></details></div><h2 id=\"trait-implementations\"")
+                {
+                    // Struct with methods (implementations section)
+                    result.insert_str(
+                        pos + "</div></details></div></details></div>".len(),
+                        &inheritance_graph_html,
+                    );
+                    true
+                } else if let Some(pos) =
+                    result.find("</div></details><h2 id=\"trait-implementations\"")
+                {
+                    // Simple struct without methods
                     result.insert_str(pos + "</div></details>".len(), &inheritance_graph_html);
+                    true
+                } else {
+                    false
+                };
+
+                if !inserted {
+                    eprintln!(
+                        "  Warning: Could not find insertion point for {} trait graph",
+                        simple_name
+                    );
                 }
             }
         }
@@ -321,7 +357,8 @@ mod tests {
 
     #[test]
     fn test_is_already_processed_already_processed() {
-        let html = "<html><body><p>Content</p><!-- Documentation processed by xtask -->\n</body></html>";
+        let html =
+            "<html><body><p>Content</p><!-- Documentation processed by xtask -->\n</body></html>";
         assert!(is_already_processed(html));
     }
 
@@ -333,6 +370,11 @@ mod tests {
 
         // Should only add marker once
         assert_eq!(first, second);
-        assert_eq!(first.matches("<!-- Documentation processed by xtask -->").count(), 1);
+        assert_eq!(
+            first
+                .matches("<!-- Documentation processed by xtask -->")
+                .count(),
+            1
+        );
     }
 }

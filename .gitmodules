@@ -1,0 +1,3 @@
+[submodule "external/base"]
+	path = external/base
+	url = https://github.com/pthrr/base

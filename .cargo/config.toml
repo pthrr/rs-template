@@ -1,3 +1,6 @@
 [alias]
 xtask = "run --package xtask --"
 doc-open = "doc --no-deps --open"
+
+[target.x86_64-unknown-linux-gnu]
+linker = "gcc"

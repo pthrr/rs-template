@@ -1,0 +1,53 @@
+version: '3'
+
+tasks:
+  default:
+    cmds:
+      - task --list-all
+
+  build:
+    cmds:
+      - cargo build
+
+  build-release:
+    cmds:
+      - cargo build --release
+
+  run:
+    cmds:
+      - cargo run
+
+  test:
+    cmds:
+      - cargo test
+
+  check:
+    cmds:
+      - cargo check
+
+  lint:
+    cmds:
+      - cargo clippy -- -D warnings
+
+  clean:
+    cmds:
+      - cargo clean
+
+  doc:
+    cmds:
+      - cargo xtask doc
+
+  doc-open:
+    cmds:
+      - cargo xtask doc-open
+
+  verify:
+    cmds:
+      - |
+        if command -v verus &> /dev/null; then
+          export VERUS_ROOT="${VERUS_ROOT:-$HOME/opt/verus/source/target-verus/release}"
+          verus --crate-type=lib src/verified.rs
+        else
+          echo "Verus not found in PATH"
+          exit 1
+        fi

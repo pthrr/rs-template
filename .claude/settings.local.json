@@ -12,7 +12,9 @@
       "Bash(task test)",
       "Bash(task)",
       "Bash(task lint:*)",
-      "Bash(verus:*)"
+      "Bash(verus:*)",
+      "Bash(task check:*)",
+      "Bash(pre-commit run:*)"
     ],
     "deny": [],
     "ask": []

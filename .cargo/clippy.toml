@@ -1,0 +1,65 @@
+# Global Clippy configuration
+# This file configures custom lints for all Rust projects
+# Based on: https://www.schneems.com/2025/11/19/find-accidental-code-usage-with-a-custom-clippytoml/
+#
+# Lint levels are set in .cargo/config.toml via rustflags
+
+# =============================================================================
+# Thresholds
+# =============================================================================
+
+# Cognitive complexity threshold (default: 25)
+cognitive-complexity-threshold = 25
+
+# Too many arguments threshold (default: 7)
+too-many-arguments-threshold = 7
+
+# Too many lines threshold (default: 100)
+too-many-lines-threshold = 100
+
+# Type complexity threshold (default: 250, raised for WDF nested types)
+type-complexity-threshold = 500
+
+# Minimum identifier length - ban single char names
+min-ident-chars-threshold = 2
+
+# MSRV - minimum supported Rust version
+msrv = "1.84.0"
+
+# =============================================================================
+# Disallowed methods
+# =============================================================================
+disallowed-methods = [
+    # Unsafe concurrency primitives - prefer safer alternatives
+    { path = "std::env::set_current_dir", reason = "Unsafe in multi-threaded contexts. Use scoped directory changes or explicit paths" },
+    { path = "std::env::set_var", reason = "Unsafe in multi-threaded programs. Environment changes are global and not thread-safe" },
+    { path = "std::env::remove_var", reason = "Unsafe in multi-threaded programs. Environment changes are global and not thread-safe" },
+
+    # Dangerous operations that should be explicit
+    { path = "std::mem::forget", reason = "Leaks memory. Use ManuallyDrop or other explicit patterns instead" },
+    { path = "std::process::exit", reason = "Abrupt termination bypasses destructors. Return from main or use controlled shutdown" },
+    { path = "std::process::abort", reason = "Abrupt termination without cleanup. Use panic! or proper error handling" },
+
+    # Prefer explicit error handling
+    { path = "std::panic::catch_unwind", reason = "Catching panics is rarely the right solution. Use Result for error handling" },
+    { path = "std::panic::resume_unwind", reason = "Resuming panics is fragile. Use proper error propagation with Result" },
+
+    # Prefer modern alternatives
+    { path = "std::mem::uninitialized", reason = "Deprecated and unsound. Use MaybeUninit instead" },
+    { path = "std::mem::zeroed", reason = "Can be unsound for some types. Use MaybeUninit::zeroed() with proper initialization" },
+
+    # Common footguns
+    { path = "std::thread::sleep_ms", reason = "Deprecated. Use std::thread::sleep with Duration instead" },
+
+    # Dangerous transmutes
+    { path = "std::mem::transmute", reason = "Extremely dangerous. Use safer alternatives like from_ne_bytes, or explicit casting" },
+    { path = "std::mem::transmute_copy", reason = "Extremely dangerous. Use safer alternatives or document why this is necessary" },
+
+    # String conversions that can panic
+    { path = "std::str::from_utf8_unchecked", reason = "Undefined behavior if not UTF-8. Use from_utf8 and handle the error" },
+    { path = "std::string::String::from_utf8_unchecked", reason = "Undefined behavior if not UTF-8. Use from_utf8 and handle the error" },
+
+    # Slice access that can panic (allow-invalid: clippy can't resolve inherent impl paths)
+    { path = "core::slice::<impl [T]>::get_unchecked", reason = "Undefined behavior if out of bounds. Use get() and handle None", allow-invalid = true },
+    { path = "core::slice::<impl [T]>::get_unchecked_mut", reason = "Undefined behavior if out of bounds. Use get_mut() and handle None", allow-invalid = true },
+]

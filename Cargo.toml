@@ -10,6 +10,10 @@ edition = "2024"
 clap = { version = "4.5.53", features = ["derive"] }
 base = { path = "external/base" }
 
+[dev-dependencies]
+mockall = "0.13"
+proptest = "1.6"
+
 [lib]
 name = "rust_template"
 path = "src/lib.rs"

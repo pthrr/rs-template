@@ -10,45 +10,33 @@ repos:
       - id: check-merge-conflict
       - id: mixed-line-ending
 
-  # - repo: local
-  #   hooks:
-      # - id: cargo-fmt
-      #   name: cargo fmt
-      #   entry: cargo fmt
-      #   language: system
-      #   types: [rust]
-      #   pass_filenames: false
-      #
-      # - id: cargo-clippy
-      #   name: cargo clippy
-      #   entry: cargo clippy --all-targets --all-features -- -D warnings
-      #   language: system
-      #   types: [rust]
-      #   pass_filenames: false
-      #
-      # - id: cargo-check
-      #   name: cargo check
-      #   entry: cargo check --all-targets --all-features
-      #   language: system
-      #   types: [rust]
-      #   pass_filenames: false
-      #
-      # - id: cargo-test
-      #   name: cargo test
-      #   entry: cargo test
-      #   language: system
-      #   types: [rust]
-      #   pass_filenames: false
-      #   stages: [manual]
-
-  - repo: https://github.com/igorshubovych/markdownlint-cli
-    rev: v0.43.0
+  - repo: local
     hooks:
-      - id: markdownlint
-        args: ['--fix']
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt
+        language: system
+        types: [rust]
+        pass_filenames: false
 
-  - repo: https://github.com/adrienverge/yamllint
-    rev: v1.35.1
-    hooks:
-      - id: yamllint
-        args: ['-d', '{extends: default, rules: {line-length: {max: 120}, document-start: disable}}']
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --all-targets --all-features -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-check
+        name: cargo check
+        entry: cargo check --all-targets --all-features
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-test
+        name: cargo test
+        entry: cargo test
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [manual]
